@@ -19,6 +19,8 @@ from email.utils import parseaddr
 from typing import Dict, List, Tuple, Any
 
 import openai
+import os
+openai.api_key = os.getenv("OPENAI_API_KEY")
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -129,6 +131,26 @@ def collect_attachments(full: Dict[str, Any]) -> List[str]:
     walk(full.get("payload", {}).get("parts", []))
     return files
 
+def extract_plain_text(full: Dict[str, Any]) -> str:
+    """Walks the Gmail message parts and returns all text/plain or text/html content decoded."""
+    def walk(parts):
+        texts: List[str] = []
+        for p in parts:
+            ct = p.get("mimeType", "")
+            data = p.get("body", {}).get("data")
+            if data and ct in ("text/plain", "text/html"):
+                txt = base64.urlsafe_b64decode(data).decode("utf-8", "ignore")
+                if ct == "text/html":
+                    # strip HTML tags
+                    txt = re.sub(r"<[^>]+>", " ", txt)
+                texts.append(txt)
+            # recurse for nested parts
+            if "parts" in p:
+                texts.extend(walk(p["parts"]))
+        return texts
+
+    return "\n".join(walk(full.get("payload", {}).get("parts", [])))
+
 # ─── SUMMARISER ──────────────────────────────────────────────────────────
 def summarise(subject: str, text: str) -> str:
     if not text:
@@ -145,8 +167,9 @@ def summarise(subject: str, text: str) -> str:
             temperature=0.2,
         )
         summary = resp.choices[0].message.content.strip()
-    except Exception:
-        return "Summary not available."
+    except Exception as e:
+    	print(f"❌ summarise() failed for subject={subject!r}: {e}")
+    	raise
 
     # Remove duplicate subject
     subj_norm = re.sub(r"\W+", "", subject.lower())
@@ -254,7 +277,9 @@ def main() -> None:
         if meta["subject"] in seen:
             continue
         seen.add(meta["subject"])
-        meta["summary"] = summarise(meta["subject"], meta["snippet"] or meta["subject"])
+        # Extract the entire email body (plain or HTML) for summarisation
+        body_text = extract_plain_text(full) or meta["snippet"] or meta["subject"]
+        meta["summary"] = summarise(meta["subject"], body_text)
         metas.append(meta)
 
     groups: Dict[str, List[Dict[str, Any]]] = {}
