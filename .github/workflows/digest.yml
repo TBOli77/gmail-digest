@@ -2,9 +2,8 @@ name: Gmail Daily Digest
 
 on:
   schedule:
-    # 12:30 UTC = 07:30 America/Chicago
-    - cron:  '30 12 * * *'
-  workflow_dispatch:  # allows manual run from the GitHub UI
+    - cron: '30 12 * * *'  # 12:30 UTC = 07:30 America/Chicago
+  workflow_dispatch: {}   # allows manual run from the GitHub UI
 
 jobs:
   run:
@@ -21,13 +20,13 @@ jobs:
 
       - name: Run Gmail Digest
         env:
-          OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
-          GMAIL_CLIENT_ID:  ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          TOKEN_JSON:       ${{ secrets.TOKEN_JSON }}
-          NOTION_SECRET:    ${{ secrets.NOTION_SECRET }}
-          NOTION_DB_ID:     ${{ secrets.NOTION_DB_ID }}
-          SEND_TO:          ${{ secrets.SEND_TO }}
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          GMAIL_CLIENT_ID:    ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET:$({{ secrets.GMAIL_CLIENT_SECRET }})
+          TOKEN_JSON:         ${{ secrets.TOKEN_JSON }}
+          NOTION_SECRET:      ${{ secrets.NOTION_SECRET }}
+          NOTION_DB_ID:       ${{ secrets.NOTION_DB_ID }}
+          SEND_TO:            ${{ secrets.SEND_TO }}
         run: |
           echo "$TOKEN_JSON" > token.json
           python gmail_digest.py
