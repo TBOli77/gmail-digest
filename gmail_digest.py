@@ -167,16 +167,17 @@ def summarise(subject: str, text: str) -> str:
         return "Summary not available."
     sys_prompt = "Summarise the email in 1–2 sentences. **Do not** repeat the subject."
     try:
-        resp = openai.ChatCompletion.create(
+        resp = openai.chat.completions.create(
             model=MODEL,
             messages=[
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": textwrap.shorten(text, width=1200, placeholder=" …")},
+                {"role": "user",   "content": textwrap.shorten(text, width=1200, placeholder=" …")},
             ],
             max_tokens=SUMMARY_TOKENS,
             temperature=0.2,
         )
-        summary = resp.choices[0].message.content.strip()
+        # The new API nests content a bit differently:
+        summary = resp.choices[0].message["content"].strip()
     except Exception as e:
     	print(f"❌ summarise() failed for subject={subject!r}: {e}")
     	raise
