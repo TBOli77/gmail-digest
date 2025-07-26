@@ -1,26 +1,20 @@
 name: Gmail Daily Digest
-
 on:
   schedule:
     - cron: '30 12 * * *'  # 12:30 UTC = 07:30 America/Chicago
   workflow_dispatch: {}   # allows manual run from the GitHub UI
-
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - name: Install dependencies
         run: pip install openai google-auth google-auth-oauthlib google-api-python-client notion-client
-
       - name: Run Gmail Digest
         env:
           OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
