@@ -177,7 +177,7 @@ def summarise(subject: str, text: str) -> str:
             temperature=0.2,
         )
         # The new API nests content a bit differently:
-        summary = resp.choices[0].message["content"].strip()
+        summary = resp.choices[0].message.content.strip()
     except Exception as e:
     	print(f"❌ summarise() failed for subject={subject!r}: {e}")
     	raise
