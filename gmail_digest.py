@@ -22,6 +22,7 @@ import openai
 import os
 openai.api_key = os.getenv("OPENAI_API_KEY")
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -75,10 +76,18 @@ NEED_ACTION_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 
 # ─── HELPER FUNCTIONS ────────────────────────────────────────────────────
 def get_credentials() -> Credentials:
+    # Load token.json, refresh if needed
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-        if creds.valid:
+        if creds and creds.valid:
             return creds
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            with open("token.json", "w") as f:
+                f.write(creds.to_json())
+            return creds
+
+    # Only fall back to interactive OAuth for local runs
     flow = InstalledAppFlow.from_client_config(
         {
             "installed": {
@@ -92,7 +101,8 @@ def get_credentials() -> Credentials:
         SCOPES,
     )
     creds = flow.run_local_server(port=8765, prompt="consent")
-    open("token.json", "w").write(creds.to_json())
+    with open("token.json", "w") as f:
+        f.write(creds.to_json())
     return creds
 
 def list_msg_ids(svc, after_ts: int) -> List[str]:
