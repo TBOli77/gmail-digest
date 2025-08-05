@@ -1,8 +1,8 @@
 name: Gmail Daily Digest
 
 on:
-  schedule:
-    - cron: '30 12 * * *'  # 12:30 UTC = 07:30 America/Chicago
+  # schedule: # removing Github's scheduller to use only the cronjob.org trigger - remove both jogo-da-velha to reinstate it
+  #   - cron: '30 12 * * *'  # 12:30 UTC = 07:30 America/Chicago
   workflow_dispatch: {}   # allows manual run from the GitHub UI
 
 jobs:
