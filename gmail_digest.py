@@ -1,45 +1,53 @@
 #!/usr/bin/env python3
 """
-gmail_digest.py  —  v3 stable (25 Jul 2025)
+gmail_digest.py  —  v3.1 stable
 
-• GPT-4o summaries (no subject repetition)
-• Categories: Work (ArcelorMittal only), Family, School, Activities,
-  Market Update, Bills & Finance, Housing, Purchases & Offers,
-  Meetings & Invites, Newsletters, Personal, Other
-• Follow-up detection (reply / docs / meeting / RSVP + “need photo/BC”)
-• Skip self-sent digests
-• Clean HTML cards + Notion logging
+Key changes vs v3:
+• Credentials loader prefers TOKEN_JSON env (no file required), then token.json
+• Robust refresh with explicit messages for invalid_grant / invalid_client
+• No interactive OAuth in CI (GITHUB_ACTIONS or NO_OAUTH_LOCAL=1)
+• Otherwise functionality preserved: GPT-4o summaries, categories, follow-ups,
+  clean HTML digest + Notion logging.
 """
 
 from __future__ import annotations
-import base64, datetime as dt, html, os, re, textwrap, time
+import base64
+import datetime as dt
+import html
+import json
+import os
+import re
+import textwrap
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import parseaddr
 from typing import Dict, List, Tuple, Any
 
 import openai
-import os
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from google.auth.exceptions import RefreshError
+
 from notion_client import Client
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────
-CLIENT_ID: str     = os.getenv("GMAIL_CLIENT_ID", "")
-CLIENT_SECRET: str = os.getenv("GMAIL_CLIENT_SECRET", "")
-SEND_TO: str       = os.getenv("SEND_TO", "thiago.oliveira77@gmail.com")
+CLIENT_ID: str     = os.getenv("GMAIL_CLIENT_ID", "").strip()
+CLIENT_SECRET: str = os.getenv("GMAIL_CLIENT_SECRET", "").strip()
+SEND_TO: str       = os.getenv("SEND_TO", "thiago.oliveira77@gmail.com").strip()
 
 MODEL           = "gpt-4o"
 SUMMARY_TOKENS  = 120
 CHUNK_SIZE      = 1900          # Notion block limit ≈2 k
 WINDOW_SECONDS  = 24 * 3600
 
-NOTION_SECRET = os.getenv("NOTION_SECRET")
-NOTION_DB_ID  = os.getenv("NOTION_DB_ID")
+NOTION_SECRET = os.getenv("NOTION_SECRET", "").strip()
+NOTION_DB_ID  = os.getenv("NOTION_DB_ID", "").strip()
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -75,19 +83,80 @@ NEED_ACTION_PATTERNS: List[Tuple[str, re.Pattern[str]]] = [
 ]
 
 # ─── HELPER FUNCTIONS ────────────────────────────────────────────────────
-def get_credentials() -> Credentials:
-    # Load token.json, refresh if needed
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-        if creds and creds.valid:
-            return creds
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            with open("token.json", "w") as f:
-                f.write(creds.to_json())
-            return creds
+def _load_creds_from_json_blob(blob: str) -> Credentials:
+    """
+    Accepts a JSON string representing an "authorized_user" credential and
+    returns a google.oauth2.credentials.Credentials with SCOPES applied.
+    """
+    data = json.loads(blob)
+    # Allow both "scopes" (string) and "scope" (compat)
+    scopes = data.get("scopes") or data.get("scope")
+    if isinstance(scopes, str):
+        data["scopes"] = scopes
+    # Ensure required fields are present
+    for k in ("client_id", "client_secret", "refresh_token"):
+        if not data.get(k):
+            raise ValueError(f"token.json missing required field: {k}")
+    return Credentials.from_authorized_user_info(data, SCOPES)
 
-    # Only fall back to interactive OAuth for local runs
+def _maybe_refresh(creds: Credentials) -> Credentials:
+    if creds.valid:
+        return creds
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            return creds
+        except RefreshError as e:
+            msg = str(e)
+            # Common cases explained:
+            if "invalid_grant" in msg:
+                raise RuntimeError(
+                    "Google returned invalid_grant while refreshing.\n"
+                    "Your refresh token is expired or revoked. Generate a new TOKEN_JSON via OAuth Playground "
+                    "and update the GitHub Secret."
+                ) from e
+            if "invalid_client" in msg:
+                raise RuntimeError(
+                    "Google returned invalid_client while refreshing.\n"
+                    "Check that client_id/client_secret in TOKEN_JSON match the *same* Google Cloud project."
+                ) from e
+            raise
+    raise RuntimeError("Credentials are invalid and cannot be refreshed (no refresh_token).")
+
+def get_credentials() -> Credentials:
+    """
+    Load credentials in this order:
+      1) TOKEN_JSON env (preferred for CI)
+      2) token.json file (legacy)
+      3) Interactive OAuth **only when not in CI** (local dev)
+    """
+    token_env = os.getenv("TOKEN_JSON", "").strip()
+    if token_env:
+        creds = _load_creds_from_json_blob(token_env)
+        return _maybe_refresh(creds)
+
+    if os.path.exists("token.json"):
+        with open("token.json", "r", encoding="utf-8") as f:
+            creds = Credentials.from_authorized_user_info(json.load(f), SCOPES)
+        creds = _maybe_refresh(creds)
+        # write back refreshed token for local runs
+        try:
+            with open("token.json", "w", encoding="utf-8") as f:
+                f.write(creds.to_json())
+        except Exception:
+            pass
+        return creds
+
+    # Only fall back to interactive flow locally
+    if os.getenv("GITHUB_ACTIONS") or os.getenv("NO_OAUTH_LOCAL") == "1":
+        raise RuntimeError(
+            "No TOKEN_JSON env and no token.json found; interactive OAuth is disabled in CI.\n"
+            "Create a refresh token via OAuth Playground and set TOKEN_JSON secret."
+        )
+
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise RuntimeError("CLIENT_ID/CLIENT_SECRET env vars are required for local interactive OAuth.")
+
     flow = InstalledAppFlow.from_client_config(
         {
             "installed": {
@@ -101,8 +170,11 @@ def get_credentials() -> Credentials:
         SCOPES,
     )
     creds = flow.run_local_server(port=8765, prompt="consent")
-    with open("token.json", "w") as f:
-        f.write(creds.to_json())
+    try:
+        with open("token.json", "w", encoding="utf-8") as f:
+            f.write(creds.to_json())
+    except Exception:
+        pass
     return creds
 
 def list_msg_ids(svc, after_ts: int) -> List[str]:
@@ -151,14 +223,11 @@ def extract_plain_text(full: Dict[str, Any]) -> str:
             if data and ct in ("text/plain", "text/html"):
                 txt = base64.urlsafe_b64decode(data).decode("utf-8", "ignore")
                 if ct == "text/html":
-                    # strip HTML tags
                     txt = re.sub(r"<[^>]+>", " ", txt)
                 texts.append(txt)
-            # recurse for nested parts
             if "parts" in p:
                 texts.extend(walk(p["parts"]))
         return texts
-
     return "\n".join(walk(full.get("payload", {}).get("parts", [])))
 
 # ─── SUMMARISER ──────────────────────────────────────────────────────────
@@ -176,13 +245,11 @@ def summarise(subject: str, text: str) -> str:
             max_tokens=SUMMARY_TOKENS,
             temperature=0.2,
         )
-        # The new API nests content a bit differently:
         summary = resp.choices[0].message.content.strip()
     except Exception as e:
-    	print(f"❌ summarise() failed for subject={subject!r}: {e}")
-    	raise
+        print(f"❌ summarise() failed for subject={subject!r}: {e}")
+        raise
 
-    # Remove duplicate subject
     subj_norm = re.sub(r"\W+", "", subject.lower())
     summ_norm = re.sub(r"\W+", "", summary.lower())
     if subj_norm and summ_norm.startswith(subj_norm[:30]):
@@ -213,7 +280,8 @@ def build_digest(groups: Dict[str, List[Dict[str, Any]]]):
     sections, attachments, followups = [], [], []
     ref_no = 1
     for cat, items in groups.items():
-        if not items: continue
+        if not items:
+            continue
         seg = [f"<h3>{cat}</h3>"]
         for m in items:
             ref = f"[{ref_no:02d}]"
@@ -254,7 +322,8 @@ def strip_html(ht: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", ht)).strip()
 
 def add_to_notion(html_digest: str) -> None:
-    if not (NOTION_SECRET and NOTION_DB_ID): return
+    if not (NOTION_SECRET and NOTION_DB_ID):
+        return
     lines = [ln for ln in strip_html(html_digest).splitlines() if ln.strip()]
     blocks: List[Dict[str, Any]] = []
     for ln in lines:
@@ -268,7 +337,8 @@ def add_to_notion(html_digest: str) -> None:
     Client(auth=NOTION_SECRET).pages.create(
         parent={"database_id": NOTION_DB_ID},
         properties={"Name": {"title": [{"text": {"content": f"Digest {dt.date.today()}"}}]}},
-        children=blocks[:50])
+        children=blocks[:50]
+    )
 
 # ─── MAIN ────────────────────────────────────────────────────────────────
 def main() -> None:
@@ -288,7 +358,6 @@ def main() -> None:
         if meta["subject"] in seen:
             continue
         seen.add(meta["subject"])
-        # Extract the entire email body (plain or HTML) for summarisation
         body_text = extract_plain_text(full) or meta["snippet"] or meta["subject"]
         meta["summary"] = summarise(meta["subject"], body_text)
         metas.append(meta)
@@ -338,9 +407,10 @@ def main() -> None:
     add_to_notion(html_digest)
     print("✅ Improved digest emailed & logged to Notion!")
 
-
 if __name__ == "__main__":
     try:
         main()
     except HttpError as err:
         print("❌ Gmail API error:", err)
+    except Exception as e:
+        print("❌ Fatal error:", e)
