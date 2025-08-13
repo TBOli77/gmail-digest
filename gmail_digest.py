@@ -234,7 +234,7 @@ def extract_plain_text(full: Dict[str, Any]) -> str:
 def summarise(subject: str, text: str) -> str:
     if not text:
         return "Summary not available."
-    sys_prompt = "Summarise the email in 1–2 sentences. **Do not** repeat the subject."
+    sys_prompt = "Summarise the email in 1 paragraph. **Do not** repeat the subject."
     try:
         resp = openai.chat.completions.create(
             model=MODEL,
@@ -321,23 +321,55 @@ def build_suggestions(groups: Dict[str, List[Dict[str, Any]]], followups, attach
 def strip_html(ht: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", ht)).strip()
 
+def _rt(text: str):
+    """Convenience: Notion rich_text object from plain text."""
+    return [{"type": "text", "text": {"content": text}}]
+
 def add_to_notion(html_digest: str) -> None:
     if not (NOTION_SECRET and NOTION_DB_ID):
         return
-    lines = [ln for ln in strip_html(html_digest).splitlines() if ln.strip()]
+
+    client = Client(auth=NOTION_SECRET)
+
+    title = f"Digest {dt.date.today()}"
+
+    # Plain-text version to feed the 'Digest' property and to build blocks.
+    plain = strip_html(html_digest)
+
+    # ---- Fill the 'Digest' property (rich_text) --------------------------
+    # Notion rich_text chunks: stay safely below ~2000 chars per chunk.
+    digest_chunks = [plain[i:i + CHUNK_SIZE] for i in range(0, len(plain), CHUNK_SIZE)]
+    # Keep this property reasonably short (first few chunks):
+    digest_rich = [{"type": "text", "text": {"content": ch}} for ch in digest_chunks[:5]]
+
+    # ---- Build page body blocks (headings + bullets), like before --------
+    lines = [ln for ln in plain.splitlines() if ln.strip()]
     blocks: List[Dict[str, Any]] = []
     for ln in lines:
         if re.match(r"^[📊📝📎🤖]|^[A-Z][a-z]+", ln):
-            blocks.append({"object": "block", "type": "heading_2",
-                           "heading_2": {"rich_text": [{"type": "text", "text": {"content": ln}}]}})
+            blocks.append({
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {"rich_text": _rt(ln)}
+            })
         else:
-            for chunk in (ln[i:i+CHUNK_SIZE] for i in range(0, len(ln), CHUNK_SIZE)):
-                blocks.append({"object": "block", "type": "bulleted_list_item",
-                               "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": chunk}}]}})
-    Client(auth=NOTION_SECRET).pages.create(
+            for chunk in (ln[i:i + CHUNK_SIZE] for i in range(0, len(ln), CHUNK_SIZE)):
+                blocks.append({
+                    "object": "block",
+                    "type": "bulleted_list_item",
+                    "bulleted_list_item": {"rich_text": _rt(chunk)}
+                })
+
+    client.pages.create(
         parent={"database_id": NOTION_DB_ID},
-        properties={"Name": {"title": [{"text": {"content": f"Digest {dt.date.today()}"}}]}},
-        children=blocks[:50]
+        properties={
+            "Name": {"title": _rt(title)},
+            "Digest": {"rich_text": digest_rich},
+            # If your DB has a Date property named "Date", uncomment:
+            # "Date": {"date": {"start": dt.date.today().isoformat()}},
+        },
+        # Keep under hard API limits; 80 is a safe ceiling.
+        children=blocks[:80],
     )
 
 # ─── MAIN ────────────────────────────────────────────────────────────────
