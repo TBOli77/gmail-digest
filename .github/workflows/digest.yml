@@ -1,7 +1,7 @@
 name: Gmail Daily Digest
 
 on:
-  # schedule: # removing Github's scheduller to use only the cronjob.org trigger - remove both jogo-da-velha to reinstate it
+  # schedule: # removing GitHub's scheduler to use only cron-job.org — remove the two lines below to reinstate it
   #   - cron: '30 12 * * *'  # 12:30 UTC = 07:30 America/Chicago
   workflow_dispatch: {}   # allows manual run from the GitHub UI
 
@@ -20,18 +20,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install openai google-auth google-auth-oauthlib \
-                      google-api-python-client notion-client
+          python -m pip install --upgrade pip
+          pip install --upgrade openai google-api-python-client google-auth google-auth-oauthlib notion-client
 
       - name: Run Gmail Digest
         env:
-          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
-          GMAIL_CLIENT_ID:    ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
-          TOKEN_JSON:         ${{ secrets.TOKEN_JSON }}
-          NOTION_SECRET:      ${{ secrets.NOTION_SECRET }}
-          NOTION_DB_ID:       ${{ secrets.NOTION_DB_ID }}
-          SEND_TO:            ${{ secrets.SEND_TO }}
-        run: |
-          echo "$TOKEN_JSON" > token.json
-          python gmail_digest.py
+          OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY }}
+          TOKEN_JSON:           ${{ secrets.TOKEN_JSON }}
+          GMAIL_CLIENT_ID:      ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET:  ${{ secrets.GMAIL_CLIENT_SECRET }}
+          NOTION_SECRET:        ${{ secrets.NOTION_SECRET }}
+          NOTION_DB_ID:         ${{ secrets.NOTION_DB_ID }}
+          SEND_TO:              ${{ secrets.SEND_TO }}
+          NO_OAUTH_LOCAL:       '1'
+        run: python gmail_digest.py
